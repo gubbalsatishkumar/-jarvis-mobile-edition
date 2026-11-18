@@ -1,22 +1,36 @@
-// ===== 1. API KEY (Safe: stored locally in your browser) =====
+// ===== 1. API KEY & SMART MODELS =====
 let API_KEY = localStorage.getItem('jarvis_key');
-
 if (!API_KEY) {
   API_KEY = prompt('Enter your Gemini API Key:');
-  if (API_KEY) {
-    localStorage.setItem('jarvis_key', API_KEY.trim());
-  }
+  if (API_KEY) localStorage.setItem('jarvis_key', API_KEY.trim());
 }
 
-// ===== 2. SMART MODELS (auto-fallback if one fails) =====
-const MODELS = ["gemini-2.5-flash", "gemini-flash-latest"];
+const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"];
+
+// ===== 2. MEMORY SYSTEM =====
+let MEMORY = JSON.parse(localStorage.getItem('jarvis_memory') || '[]');
+function saveMemory() {
+  localStorage.setItem('jarvis_memory', JSON.stringify(MEMORY));
+}
+
 const chat = document.getElementById('chat');
 const input = document.getElementById('msg');
-const micBtn = document.getElementById('mic-btn');
 const sendBtn = document.getElementById('send');
+const micBtn = document.getElementById('mic-btn');
+const clearBtn = document.getElementById('clear-btn');
+const camBtn = document.getElementById('cam-btn');
+const imgInput = document.getElementById('img-input');
 
-// ===== 3. GEMINI BRAIN (auto-fallback) =====
+MEMORY.forEach(m => add((m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text, m.role === 'user' ? 'user' : 'ai'));
+
+// ===== 3. GEMINI BRAIN (MEMORY INTEGRATED) =====
 async function callGemini(p) {
+  const contents = MEMORY.slice(-12).map(m => ({
+    role: m.role,
+    parts: [{ text: m.text }]
+  }));
+  contents.push({ role: 'user', parts: [{ text: p }] });
+
   let lastErr;
   for (const m of MODELS) {
     try {
@@ -25,18 +39,14 @@ async function callGemini(p) {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: p }] }]
-          })
+          body: JSON.stringify({ contents: contents })
         }
       );
       const data = await res.json();
 
       if (data.error) {
         lastErr = new Error(data.error.message);
-        if (/high demand|temporar|quota|rate|unavailable|no longer available|deprecated/i.test(data.error.message)) {
-          continue;
-        }
+        if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
         throw lastErr;
       }
 
@@ -52,17 +62,79 @@ async function askGemini(p) {
   add('J.A.R.V.I.S: Thinking...', 'ai');
   try {
     const reply = await callGemini(p);
+    MEMORY.push({ role: 'user', text: p });
+    MEMORY.push({ role: 'model', text: reply });
+    saveMemory();
     chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
-    speak(reply); // Speaks the reply out loud
+    speak(reply);
   } catch (e) {
     chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR - ' + e.message;
   }
 }
 
-// ===== 4. SPEECH RECOGNITION (Speech-to-Text) =====
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// ===== 4. VISION ENGINE (EYES) =====
+if (camBtn && imgInput) {
+  camBtn.onclick = () => imgInput.click();
+  imgInput.onchange = () => {
+    const file = imgInput.files[0];
+    if (!file) return;
 
-if (SR) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      const q = input.value.trim() || 'What do you see? Describe briefly.';
+      add('YOU: [IMAGE] ' + q, 'user');
+      input.value = '';
+      imgInput.value = ''; // Reset input so the same file can be re-selected if needed
+      askVision(base64, file.type, q);
+    };
+    reader.readAsDataURL(file);
+  };
+}
+
+async function askVision(base64, mime, q) {
+  add('J.A.R.V.I.S: Analyzing image...', 'ai');
+  let lastErr;
+
+  for (const m of MODELS) {
+    try {
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: q },
+                { inline_data: { mime_type: mime, data: base64 } }
+              ]
+            }]
+          })
+        }
+      );
+      const data = await res.json();
+
+      if (data.error) {
+        lastErr = new Error(data.error.message);
+        if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
+        throw lastErr;
+      }
+
+      const reply = data.candidates[0].content.parts[0].text;
+      chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
+      speak(reply);
+      return;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR - ' + lastErr.message;
+}
+
+// ===== 5. VOICE & UTILS =====
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (SR && micBtn) {
   const rec = new SR();
   rec.lang = 'en-US'; // Change to 'te-IN' for Telugu
 
@@ -86,14 +158,13 @@ if (SR) {
       rec.start();
       micBtn.innerText = 'LISTENING...';
     } catch (err) {
-      // Prevents error if clicked while already listening
+      // Ignore if already started
     }
   };
-} else {
+} else if (micBtn) {
   micBtn.style.display = 'none';
 }
 
-// ===== 5. TEXT-TO-SPEECH (Voice Output) =====
 let voices = [];
 function loadVoices() {
   voices = speechSynthesis.getVoices();
@@ -102,7 +173,7 @@ loadVoices();
 speechSynthesis.onvoiceschanged = loadVoices;
 
 function speak(t) {
-  speechSynthesis.cancel(); // Stops previous speech if still talking
+  speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(t);
   u.rate = 1.05;
   u.pitch = 0.85;
@@ -111,7 +182,6 @@ function speak(t) {
   speechSynthesis.speak(u);
 }
 
-// ===== 6. TEXT SEND BUTTON & ENTER KEY =====
 function handleSend() {
   const t = input.value.trim();
   if (!t) return;
@@ -127,6 +197,15 @@ input.addEventListener('keypress', (e) => {
     handleSend();
   }
 });
+
+if (clearBtn) {
+  clearBtn.onclick = () => {
+    MEMORY = [];
+    saveMemory();
+    chat.innerHTML = '';
+    add('SYSTEM: Memory cleared.', 'ai');
+  };
+}
 
 function add(t, w) {
   const d = document.createElement('div');
