@@ -4,12 +4,27 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>J.A.R.V.I.S</title>
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
+  <!-- PWA SUPPORT -->
+  <link rel="manifest" href="./manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#00ffff">
 </head>
 <body>
   <header>
     <h1>J.A.R.V.I.S</h1>
     <p>AUTONOMOUS PERSONAL AI ASSISTANT</p>
+    <div class="wake-bar" style="margin-top: 8px; display: flex; justify-content: center; align-items: center; gap: 8px;">
+      <button class="icon-button wake-button" id="wake-btn" type="button" aria-label="Toggle Wake Word" title="Listen for 'Hey Jarvis'" style="background: transparent; border: 1px solid #00ffff; border-radius: 50%; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: #00ffff; cursor: pointer;">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
+        </svg>
+      </button>
+      <span id="wake-status" style="font-size: 0.75rem; color: #888; letter-spacing: 1px;">WAKE: OFF</span>
+    </div>
   </header>
 
   <div class="core" id="core">
@@ -38,6 +53,6 @@
     <input id="img-input" type="file" accept="image/*" style="display:none">
   </div>
 
-  <script src="script.js?v=8"></script>
+  <script src="script.js?v=9"></script>
 </body>
 </html>
