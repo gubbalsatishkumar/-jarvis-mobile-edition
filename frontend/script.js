@@ -297,7 +297,6 @@ async function runAgent(goal) {
     const summaryPrompt = `Goal: ${JSON.stringify(String(goal))}. Tool results: ${JSON.stringify(results)}. Give a concise, helpful Telugu/English summary for Boss.`;
     return await callGemini(summaryPrompt);
   } catch (e) {
-    // Offline/Quota-Exceeded Backup: Delivers all collected data even if API quota is exhausted
     return Object.entries(results).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
   }
 }
@@ -317,14 +316,17 @@ async function callGemini(p) {
         body: JSON.stringify({ contents: contents })
       });
       const data = await res.json();
-      if (data.error) {
-        lastErr = new Error(data.error.message);
-        if (/quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(data.error.message)) {
+      if (!res.ok || data.error) {
+        const msg = data.error?.message || ("HTTP " + res.status);
+        lastErr = new Error(msg);
+        if (res.status === 429 || res.status === 503 || /quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(msg)) {
           continue;
         }
         throw lastErr;
       }
-      return data.candidates[0].content.parts[0].text;
+      const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (replyText) return replyText;
+      lastErr = new Error("Empty response from " + m);
     } catch (e) {
       lastErr = e;
     }
@@ -366,7 +368,11 @@ async function processCommand(p) {
     chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
     speak(reply);
   } catch (e) {
-    add('J.A.R.V.I.S: ERROR ' + e.message, 'ai');
+    if (chat.lastChild && chat.lastChild.innerText.includes('Thinking...')) {
+      chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + e.message;
+    } else {
+      add('J.A.R.V.I.S: ERROR ' + e.message, 'ai');
+    }
   }
   setCoreState('', 'SYSTEM READY');
 }
@@ -403,16 +409,19 @@ async function askVision(base64, mime, q) {
         })
       });
       const data = await res.json();
-      if (data.error) {
-        lastErr = new Error(data.error.message);
-        if (/quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(data.error.message)) continue;
+      if (!res.ok || data.error) {
+        const msg = data.error?.message || ("HTTP " + res.status);
+        lastErr = new Error(msg);
+        if (res.status === 429 || res.status === 503 || /quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(msg)) continue;
         throw lastErr;
       }
-      const reply = data.candidates[0].content.parts[0].text;
-      chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
-      speak(reply);
-      setCoreState('', 'SYSTEM READY');
-      return;
+      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (reply) {
+        chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
+        speak(reply);
+        setCoreState('', 'SYSTEM READY');
+        return;
+      }
     } catch (e) {
       lastErr = e;
     }
