@@ -2,9 +2,9 @@
 let API_KEY = localStorage.getItem('jarvis_key');
 if (!API_KEY) {
   API_KEY = prompt('Enter your Gemini API Key:');
-  if (API_KEY) localStorage.setItem('jarvis_key', API_KEY);
+  if (API_KEY) localStorage.setItem('jarvis_key', API_KEY.trim());
 }
-// Rotates automatically if one model hits the 20/day free tier limit
+
 const MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
@@ -12,14 +12,12 @@ const MODELS = [
   "gemini-flash-latest"
 ];
 
-// ===== 2. MEMORY =====
+// ===== 2. LONG-TERM MEMORY (EPISODE 05) =====
 let MEMORY = [];
 try {
-  const storedMemory = JSON.parse(localStorage.getItem('jarvis_memory') || '[]');
-  if (Array.isArray(storedMemory)) {
-    MEMORY = storedMemory.filter(
-      m => m && (m.role === 'user' || m.role === 'model') && typeof m.text === 'string'
-    );
+  const stored = JSON.parse(localStorage.getItem('jarvis_memory') || '[]');
+  if (Array.isArray(stored)) {
+    MEMORY = stored.filter(m => m && (m.role === 'user' || m.role === 'model') && typeof m.text === 'string');
   }
 } catch (e) {
   localStorage.removeItem('jarvis_memory');
@@ -35,10 +33,20 @@ const micBtn = document.getElementById('mic-btn');
 const clearBtn = document.getElementById('clear-btn');
 const camBtn = document.getElementById('cam-btn');
 const imgInput = document.getElementById('img-input');
+const core = document.getElementById('core');
+const coreText = document.getElementById('core-text');
+
+function setCoreState(state, label) {
+  if (core) {
+    core.classList.remove('listening', 'thinking');
+    if (state) core.classList.add(state);
+  }
+  if (coreText && label) coreText.innerText = label;
+}
 
 MEMORY.forEach(m => add((m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text, m.role === 'user' ? 'user' : 'ai'));
 
-// ===== WORKOUT PLAN DATA (ZERO API QUOTA) =====
+// ===== WORKOUT SPLIT (6-DAY PHYSIQUE TRANSFORMATION) =====
 const WORKOUT_PLAN = {
   1: "Day 1 (Monday) - Chest + Triceps: Bench Press 3x8-12, Incline DB Press 3x10, Chest Fly 3x12, Tricep Pushdown 3x12, OH Tricep Extension 3x10, Push-ups 2 sets.",
   2: "Day 2 (Tuesday) - Back + Biceps: Lat Pulldown 3x10, Seated Cable Row 3x10, One-arm DB Row 3x10, Barbell Curl 3x12, Hammer Curl 3x12, Dead Hang 2 sets.",
@@ -66,17 +74,17 @@ function getWorkoutResponse(t) {
   return "Today's Workout, Boss — " + WORKOUT_PLAN[planDay];
 }
 
-// ===== 3. FREE LOCAL TOOLS (ZERO GEMINI QUOTA USED) =====
+// ===== 3. ALL TOOLS (EPISODE 06 + CUSTOM TOOLS - ZERO QUOTA) =====
 async function fetchToolJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('HTTP ' + response.status);
-  return await response.json();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return await res.json();
 }
 
 async function handleTools(text) {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase().trim();
 
-  // Change API Key command (Type "change api key" if you ever want to swap keys)
+  // Change / Reset API Key
   if (t.includes('change api key') || t.includes('reset api key')) {
     const newKey = prompt('Enter new Gemini API Key:');
     if (newKey) {
@@ -105,10 +113,9 @@ async function handleTools(text) {
       const number = phoneMatch[1].replace(/[\s-]/g, '');
       window.location.href = `tel:${number}`;
       return `Calling ${number}, Boss.`;
-    } else {
-      window.location.href = 'tel:';
-      return 'Opening phone dialer, Boss.';
     }
+    window.location.href = 'tel:';
+    return 'Opening phone dialer, Boss.';
   }
 
   // Time
@@ -116,21 +123,34 @@ async function handleTools(text) {
     return 'Current time is ' + new Date().toLocaleTimeString() + ', Boss.';
   }
 
-  // Weather
+  // Date
+  if (/\bdate\b/.test(t)) {
+    return 'Today is ' + new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + ', Boss.';
+  }
+
+  // Weather (GPS with Rajamahendravaram coordinates fallback)
   if (t.includes('weather') || t.includes('వాతావరణం')) {
     return await new Promise(res => {
-      navigator.geolocation.getCurrentPosition(async p => {
+      const fetchWeather = async (lat, lon) => {
         try {
-          const d = await fetchToolJson(`https://api.open-meteo.com/v1/forecast?latitude=${p.coords.latitude}&longitude=${p.coords.longitude}&current_weather=true`);
+          const d = await fetchToolJson(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
           res(`Current temperature is ${d.current_weather.temperature}°C, wind speed ${d.current_weather.windspeed} km/h.`);
         } catch (e) {
           res('Weather service error, Boss.');
         }
-      }, () => res('Location permission denied for weather.'));
+      };
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          p => fetchWeather(p.coords.latitude, p.coords.longitude),
+          () => fetchWeather(17.0005, 81.8040)
+        );
+      } else {
+        fetchWeather(17.0005, 81.8040);
+      }
     });
   }
 
-  // News
+  // Tech News
   if (t.includes('news')) {
     try {
       const d = await fetchToolJson('https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=3');
@@ -161,7 +181,7 @@ async function handleTools(text) {
     return `Timer set for ${amount} ${unit}, Boss.`;
   }
 
-  // Translate
+  // Telugu Translator
   if (t.includes('translate')) {
     const q = text.replace(/translate\s+(this\s+)?/i, '').replace(/\s+(to|into)\s+telugu/i, '').trim() || 'hello';
     try {
@@ -172,7 +192,38 @@ async function handleTools(text) {
     }
   }
 
-  // YouTube / Open Apps
+  // Password Generator
+  if (t.includes('password')) {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#$%&*';
+    let pass = '';
+    for (let i = 0; i < 12; i++) pass += chars[Math.floor(Math.random() * chars.length)];
+    return 'Generated password: ' + pass;
+  }
+
+  // Dice / Coin Flip
+  if (t.includes('flip') || t.includes('coin')) {
+    return 'Coin flip result: ' + (Math.random() < 0.5 ? 'Heads' : 'Tails') + ', Boss.';
+  }
+  if (t.includes('dice') || t.includes('roll')) {
+    return 'Dice rolled: ' + (Math.floor(Math.random() * 6) + 1) + ', Boss.';
+  }
+
+  // Wikipedia Search
+  const wikiMatch = text.match(/^\s*(?:wikipedia|wiki|who is|what is)\s+(.+?)\s*$/i);
+  if (wikiMatch && !t.includes('time') && !t.includes('weather') && !t.includes('workout') && !t.includes('bitcoin')) {
+    const query = wikiMatch[1].trim();
+    try {
+      const url = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=1&srsearch=' + encodeURIComponent(query) + '&format=json&origin=*';
+      const data = await fetchToolJson(url);
+      const result = data?.query?.search?.[0];
+      if (result) {
+        const snippet = String(result.snippet || '').replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+        return 'Wikipedia: ' + result.title + '. ' + snippet;
+      }
+    } catch (e) {}
+  }
+
+  // YouTube / Google
   if (t.includes('youtube') || t.startsWith('play ')) {
     const q = text.replace(/^(play|open|search)\s*(on\s*)?(youtube\s*)?/i, '').trim();
     if (q) {
@@ -183,12 +234,77 @@ async function handleTools(text) {
     return 'Opening YouTube, Boss.';
   }
 
+  if (t.startsWith('google ') || t.includes('search google')) {
+    const q = text.replace(/^(search\s+google\s+for|google\s+search|google)\s*/i, '').trim();
+    if (q) {
+      window.open('https://www.google.com/search?q=' + encodeURIComponent(q), '_blank', 'noopener,noreferrer');
+      return 'Searching Google for ' + q + ', Boss.';
+    }
+    window.open('https://google.com', '_blank', 'noopener,noreferrer');
+    return 'Opening Google, Boss.';
+  }
+
   return null;
 }
 
-// ===== 4. GEMINI BRAIN WITH AUTO-FALLBACK =====
+// ===== 4. AUTONOMOUS AGENT ENGINE (EPISODE 07) =====
+const AGENT_TOOLS = Object.freeze({
+  time: async () => handleTools('current time'),
+  weather: async () => handleTools('weather'),
+  workout: async () => handleTools('workout'),
+  news: async () => handleTools('news'),
+  crypto: async () => handleTools('bitcoin')
+});
+
+function isAgentModeRequest(text = '') {
+  const value = String(text || '');
+  if (/\b(?:agent(?:\s+mode)?|run\s+(?:the\s+)?agent|use\s+(?:the\s+)?agent)\b/i.test(value)) return true;
+  if (/\b(?:briefing|research|analy[sz]e|analysis)\b/i.test(value)) return true;
+  return /\bplan\b/i.test(value) && /\b(?:day|trip|time|weather|news|crypto|bitcoin|btc|workout|gym)\b/i.test(value);
+}
+
+function planAgentTools(goal) {
+  const g = String(goal || '').toLowerCase();
+  if (g.includes('briefing') || g.includes('morning') || g.includes('my day')) {
+    return ['time', 'weather', 'workout', 'news'];
+  }
+  const plan = [];
+  if (g.includes('time')) plan.push('time');
+  if (g.includes('weather') || g.includes('trip') || g.includes('plan')) plan.push('weather');
+  if (g.includes('workout') || g.includes('gym')) plan.push('workout');
+  if (g.includes('news') || g.includes('research')) plan.push('news');
+  if (g.includes('crypto') || g.includes('bitcoin')) plan.push('crypto');
+  return plan.length ? plan : ['time', 'weather', 'workout', 'news'];
+}
+
+async function runAgent(goal) {
+  add('J.A.R.V.I.S: AGENT MODE ACTIVATED.', 'ai');
+  const toolsToRun = planAgentTools(goal);
+  const results = {};
+
+  for (let i = 0; i < toolsToRun.length; i++) {
+    const tool = toolsToRun[i];
+    add(`J.A.R.V.I.S: [${i + 1}/${toolsToRun.length}] Running ${tool} tool...`, 'ai');
+    try {
+      results[tool] = await AGENT_TOOLS[tool]();
+    } catch (e) {
+      results[tool] = 'Tool error';
+    }
+  }
+
+  add('J.A.R.V.I.S: Synthesizing final briefing...', 'ai');
+  try {
+    const summaryPrompt = `Goal: ${JSON.stringify(String(goal))}. Tool results: ${JSON.stringify(results)}. Give a concise, helpful Telugu/English summary for Boss.`;
+    return await callGemini(summaryPrompt);
+  } catch (e) {
+    // Offline/Quota-Exceeded Backup: Delivers all collected data even if API quota is exhausted
+    return Object.entries(results).map(([k, v]) => `• ${k.toUpperCase()}: ${v}`).join('\n');
+  }
+}
+
+// ===== 5. GEMINI BRAIN WITH AUTO-FALLBACK =====
 async function callGemini(p) {
-  if (!API_KEY) throw new Error('Gemini API key is missing.');
+  if (!API_KEY) throw new Error('Gemini API key is missing. Type "change api key" to add one.');
   const contents = MEMORY.slice(-10).map(m => ({ role: m.role, parts: [{ text: m.text }] }));
   contents.push({ role: 'user', parts: [{ text: p }] });
 
@@ -203,7 +319,6 @@ async function callGemini(p) {
       const data = await res.json();
       if (data.error) {
         lastErr = new Error(data.error.message);
-        // Automatically switch to next model if quota/rate limit or high demand occurs
         if (/quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(data.error.message)) {
           continue;
         }
@@ -217,20 +332,33 @@ async function callGemini(p) {
   throw lastErr;
 }
 
-// ===== 5. COMMAND ROUTER =====
+// ===== 6. MASTER COMMAND ROUTER =====
 async function processCommand(p) {
-  add('J.A.R.V.I.S: Thinking...', 'ai');
-
-  // 1. Run Free Local Tools First (Uses 0 Gemini Quota)
-  const toolReply = await handleTools(p);
-  if (toolReply) {
-    chat.lastChild.innerText = 'J.A.R.V.I.S: ' + toolReply;
-    speak(toolReply);
-    return;
-  }
-
-  // 2. Ask Gemini Brain with Multi-Model Fallback
+  setCoreState('thinking', 'PROCESSING...');
   try {
+    // 1. Agent Mode
+    if (isAgentModeRequest(p)) {
+      const agentReply = await runAgent(p);
+      MEMORY.push({ role: 'user', text: p });
+      MEMORY.push({ role: 'model', text: agentReply });
+      saveMemory();
+      add('J.A.R.V.I.S: ' + agentReply, 'ai');
+      speak(agentReply);
+      setCoreState('', 'SYSTEM READY');
+      return;
+    }
+
+    // 2. Local Tools (Zero Quota)
+    add('J.A.R.V.I.S: Thinking...', 'ai');
+    const toolReply = await handleTools(p);
+    if (toolReply) {
+      chat.lastChild.innerText = 'J.A.R.V.I.S: ' + toolReply;
+      speak(toolReply);
+      setCoreState('', 'SYSTEM READY');
+      return;
+    }
+
+    // 3. Gemini Brain
     const reply = await callGemini(p);
     MEMORY.push({ role: 'user', text: p });
     MEMORY.push({ role: 'model', text: reply });
@@ -238,11 +366,12 @@ async function processCommand(p) {
     chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
     speak(reply);
   } catch (e) {
-    chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + e.message;
+    add('J.A.R.V.I.S: ERROR ' + e.message, 'ai');
   }
+  setCoreState('', 'SYSTEM READY');
 }
 
-// ===== 6. VISION ENGINE =====
+// ===== 7. VISION ENGINE (EPISODE 05) =====
 if (camBtn && imgInput) {
   camBtn.onclick = () => imgInput.click();
   imgInput.onchange = () => {
@@ -261,6 +390,7 @@ if (camBtn && imgInput) {
 }
 
 async function askVision(base64, mime, q) {
+  setCoreState('thinking', 'SCANNING IMAGE...');
   add('J.A.R.V.I.S: Analyzing image...', 'ai');
   let lastErr;
   for (const m of MODELS) {
@@ -281,15 +411,17 @@ async function askVision(base64, mime, q) {
       const reply = data.candidates[0].content.parts[0].text;
       chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
       speak(reply);
+      setCoreState('', 'SYSTEM READY');
       return;
     } catch (e) {
       lastErr = e;
     }
   }
   chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + lastErr.message;
+  setCoreState('', 'SYSTEM READY');
 }
 
-// ===== 7. VOICE & UTILS =====
+// ===== 8. VOICE & UI CONTROLS =====
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 if (SR && micBtn) {
   const rec = new SR();
@@ -302,9 +434,11 @@ if (SR && micBtn) {
   micBtn.onclick = () => {
     rec.start();
     micBtn.innerText = 'LISTENING...';
+    setCoreState('listening', 'LISTENING...');
   };
   rec.onend = () => {
     micBtn.innerText = '🎤';
+    setCoreState('', 'SYSTEM READY');
   };
 }
 
@@ -316,6 +450,7 @@ loadVoices();
 speechSynthesis.onvoiceschanged = loadVoices;
 
 function speak(t) {
+  speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(t);
   u.rate = 1.05;
   u.pitch = 0.85;
@@ -331,6 +466,10 @@ document.getElementById('send').onclick = () => {
   input.value = '';
   processCommand(t);
 };
+
+input.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') document.getElementById('send').click();
+});
 
 if (clearBtn) {
   clearBtn.onclick = () => {
