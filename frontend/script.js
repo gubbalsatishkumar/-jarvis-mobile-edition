@@ -2,10 +2,9 @@
 let API_KEY = localStorage.getItem('jarvis_key');
 if (!API_KEY) {
   API_KEY = prompt('Enter your Gemini API Key:');
-  if (API_KEY) localStorage.setItem('jarvis_key', API_KEY.trim());
+  if (API_KEY) localStorage.setItem('jarvis_key', API_KEY);
 }
-
-const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"];
+const MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
 
 // ===== 2. MEMORY SYSTEM =====
 let MEMORY = JSON.parse(localStorage.getItem('jarvis_memory') || '[]');
@@ -15,7 +14,6 @@ function saveMemory() {
 
 const chat = document.getElementById('chat');
 const input = document.getElementById('msg');
-const sendBtn = document.getElementById('send');
 const micBtn = document.getElementById('mic-btn');
 const clearBtn = document.getElementById('clear-btn');
 const camBtn = document.getElementById('cam-btn');
@@ -23,33 +21,107 @@ const imgInput = document.getElementById('img-input');
 
 MEMORY.forEach(m => add((m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text, m.role === 'user' ? 'user' : 'ai'));
 
-// ===== 3. GEMINI BRAIN (MEMORY INTEGRATED) =====
+// ===== 3. TOOLS (THE HANDS - EPISODE 6 + INSTAGRAM & CALLS) =====
+async function handleTools(text) {
+  const t = text.toLowerCase();
+
+  // 1. Time
+  if (/\btime\b/.test(t) || t.includes('సమయం') || t.includes('టైం')) {
+    return 'The time is ' + new Date().toLocaleTimeString() + ', Boss.';
+  }
+
+  // 2. Weather
+  if (t.includes('weather') || t.includes('వాతావరణం')) {
+    return await new Promise(res => {
+      navigator.geolocation.getCurrentPosition(async p => {
+        try {
+          const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${p.coords.latitude}&longitude=${p.coords.longitude}&current_weather=true`);
+          const d = await r.json();
+          res(`It is ${d.current_weather.temperature} degrees Celsius now, Boss.`);
+        } catch (e) {
+          res('Weather service error, Boss.');
+        }
+      }, () => res('I need location permission for weather, Boss.'));
+    });
+  }
+
+  // 3. Timer
+  const m = t.match(/(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/i);
+  if ((t.includes('timer') || t.includes('టైమర్')) && m) {
+    const amount = parseInt(m[1]);
+    const unit = m[2].toLowerCase();
+    const factor = /^(hours?|hrs?|h)/.test(unit) ? 3600000 : /^(seconds?|secs?|s)/.test(unit) ? 1000 : 60000;
+    const duration = amount * factor;
+
+    setTimeout(() => {
+      speak(`Time is up Boss! ${amount} ${unit} timer completed.`);
+    }, duration);
+
+    return `Timer set for ${amount} ${unit}, Boss.`;
+  }
+
+  // 4. Translate
+  if (t.includes('translate')) {
+    const q = text.replace(/translate\s+(this\s+)?/i, '').replace(/\s+(to|into)\s+telugu/i, '').trim() || 'hello';
+    try {
+      const r = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(q) + '&langpair=en|te');
+      const d = await r.json();
+      return 'In Telugu: ' + d.responseData.translatedText;
+    } catch (e) {
+      return 'Translate error, Boss.';
+    }
+  }
+
+  // 5. YouTube Play
+  if (t.includes('play') || t.includes('youtube')) {
+    const q = text.replace(/^(play|search|open)\s*(on\s*)?(youtube\s*)?(search\s*)?/i, '').trim();
+    if (q) {
+      window.open('https://www.youtube.com/results?search_query=' + encodeURIComponent(q), '_blank');
+      return 'Searching YouTube for ' + q + ', Boss.';
+    }
+  }
+
+  // 6. Open Instagram
+  if (t.includes('instagram') || t.includes('insta')) {
+    window.open('https://www.instagram.com/', '_blank');
+    return 'Opening Instagram, Boss.';
+  }
+
+  // 7. Make Phone Calls
+  if (t.includes('call') || t.includes('dial')) {
+    const phoneMatch = t.match(/(\+?\d[\d\s-]{6,15}\d)/);
+    if (phoneMatch) {
+      const number = phoneMatch[1].replace(/[\s-]/g, '');
+      window.location.href = `tel:${number}`;
+      return `Calling ${number}, Boss.`;
+    } else {
+      window.location.href = 'tel:';
+      return 'Opening phone dialer, Boss.';
+    }
+  }
+
+  return null; // No tool matched -> Send to Gemini Brain
+}
+
+// ===== 4. GEMINI BRAIN (MEMORY INTEGRATED - EPISODE 5) =====
 async function callGemini(p) {
-  const contents = MEMORY.slice(-12).map(m => ({
-    role: m.role,
-    parts: [{ text: m.text }]
-  }));
+  const contents = MEMORY.slice(-12).map(m => ({ role: m.role, parts: [{ text: m.text }] }));
   contents.push({ role: 'user', parts: [{ text: p }] });
 
   let lastErr;
   for (const m of MODELS) {
     try {
-      const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents: contents })
-        }
-      );
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: contents })
+      });
       const data = await res.json();
-
       if (data.error) {
         lastErr = new Error(data.error.message);
         if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
         throw lastErr;
       }
-
       return data.candidates[0].content.parts[0].text;
     } catch (e) {
       lastErr = e;
@@ -58,8 +130,19 @@ async function callGemini(p) {
   throw lastErr;
 }
 
-async function askGemini(p) {
+// ===== 5. COMMAND ROUTER (TOOLS FIRST -> THEN BRAIN) =====
+async function processCommand(p) {
   add('J.A.R.V.I.S: Thinking...', 'ai');
+
+  // Step A: Check Episode 6 Tools first
+  const toolReply = await handleTools(p);
+  if (toolReply) {
+    chat.lastChild.innerText = 'J.A.R.V.I.S: ' + toolReply;
+    speak(toolReply);
+    return;
+  }
+
+  // Step B: If no tool matched, ask Gemini Brain & save to Memory
   try {
     const reply = await callGemini(p);
     MEMORY.push({ role: 'user', text: p });
@@ -68,24 +151,22 @@ async function askGemini(p) {
     chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
     speak(reply);
   } catch (e) {
-    chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR - ' + e.message;
+    chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + e.message;
   }
 }
 
-// ===== 4. VISION ENGINE (EYES) =====
+// ===== 6. VISION ENGINE (THE EYES - EPISODE 5) =====
 if (camBtn && imgInput) {
   camBtn.onclick = () => imgInput.click();
   imgInput.onchange = () => {
     const file = imgInput.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = reader.result.split(',')[1];
       const q = input.value.trim() || 'What do you see? Describe briefly.';
       add('YOU: [IMAGE] ' + q, 'user');
       input.value = '';
-      imgInput.value = ''; // Reset input so the same file can be re-selected if needed
       askVision(base64, file.type, q);
     };
     reader.readAsDataURL(file);
@@ -95,32 +176,21 @@ if (camBtn && imgInput) {
 async function askVision(base64, mime, q) {
   add('J.A.R.V.I.S: Analyzing image...', 'ai');
   let lastErr;
-
   for (const m of MODELS) {
     try {
-      const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: q },
-                { inline_data: { mime_type: mime, data: base64 } }
-              ]
-            }]
-          })
-        }
-      );
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: q }, { inline_data: { mime_type: mime, data: base64 } }] }]
+        })
+      });
       const data = await res.json();
-
       if (data.error) {
         lastErr = new Error(data.error.message);
         if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
         throw lastErr;
       }
-
       const reply = data.candidates[0].content.parts[0].text;
       chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
       speak(reply);
@@ -129,40 +199,26 @@ async function askVision(base64, mime, q) {
       lastErr = e;
     }
   }
-  chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR - ' + lastErr.message;
+  chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + lastErr.message;
 }
 
-// ===== 5. VOICE & UTILS =====
+// ===== 7. VOICE & UTILS =====
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 if (SR && micBtn) {
   const rec = new SR();
-  rec.lang = 'en-US'; // Change to 'te-IN' for Telugu
-
+  rec.lang = 'en-US';
   rec.onresult = (e) => {
     const t = e.results[0][0].transcript;
     add('YOU: ' + t, 'user');
-    askGemini(t);
+    processCommand(t);
   };
-
-  rec.onerror = (e) => {
-    micBtn.innerText = '🎤';
-    add('J.A.R.V.I.S: Mic error - ' + e.error, 'ai');
+  micBtn.onclick = () => {
+    rec.start();
+    micBtn.innerText = 'LISTENING...';
   };
-
   rec.onend = () => {
     micBtn.innerText = '🎤';
   };
-
-  micBtn.onclick = () => {
-    try {
-      rec.start();
-      micBtn.innerText = 'LISTENING...';
-    } catch (err) {
-      // Ignore if already started
-    }
-  };
-} else if (micBtn) {
-  micBtn.style.display = 'none';
 }
 
 let voices = [];
@@ -173,7 +229,6 @@ loadVoices();
 speechSynthesis.onvoiceschanged = loadVoices;
 
 function speak(t) {
-  speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(t);
   u.rate = 1.05;
   u.pitch = 0.85;
@@ -182,21 +237,13 @@ function speak(t) {
   speechSynthesis.speak(u);
 }
 
-function handleSend() {
+document.getElementById('send').onclick = () => {
   const t = input.value.trim();
   if (!t) return;
   add('YOU: ' + t, 'user');
   input.value = '';
-  askGemini(t);
-}
-
-sendBtn.onclick = handleSend;
-
-input.addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') {
-    handleSend();
-  }
-});
+  processCommand(t);
+};
 
 if (clearBtn) {
   clearBtn.onclick = () => {
