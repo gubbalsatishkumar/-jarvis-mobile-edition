@@ -41,3 +41,24 @@ button { background: #0ff; color: #000; border: none; padding: 10px 16px; font-w
   .input-area button { flex: 1 1 auto; padding: 10px 9px; font-size: 10px; }
   .row { font-size: 10px; }
 }
+
+/* WAKE BUTTON STYLES (EP 09) */
+.wake-button.active {
+  border-color: #00ff00 !important;
+  box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+}
+
+.wake-button.active svg {
+  stroke: #00ff00; /* Bright Green */
+  filter: drop-shadow(0 0 5px rgba(0, 255, 0, 0.5));
+}
+
+@keyframes pulse-wake {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.wake-button.listening svg {
+  animation: pulse-wake 1.5s infinite;
+}
