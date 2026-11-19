@@ -363,4 +363,235 @@ async function processCommand(p) {
     // 3. Gemini Brain
     const reply = await callGemini(p);
     MEMORY.push({ role: 'user', text: p });
-    MEMORY
+    MEMORY.push({ role: 'model', text: reply });
+    saveMemory();
+    chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
+    speak(reply);
+  } catch (e) {
+    if (chat.lastChild && chat.lastChild.innerText.includes('Thinking...')) {
+      chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + e.message;
+    } else {
+      add('J.A.R.V.I.S: ERROR ' + e.message, 'ai');
+    }
+  }
+  setCoreState('', 'SYSTEM READY');
+}
+
+// ===== 7. VISION ENGINE (EPISODE 05) =====
+if (camBtn && imgInput) {
+  camBtn.onclick = () => imgInput.click();
+  imgInput.onchange = () => {
+    const file = imgInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      const q = input.value.trim() || 'What do you see? Describe briefly.';
+      add('YOU: [IMAGE] ' + q, 'user');
+      input.value = '';
+      askVision(base64, file.type, q);
+    };
+    reader.readAsDataURL(file);
+  };
+}
+
+async function askVision(base64, mime, q) {
+  setCoreState('thinking', 'SCANNING IMAGE...');
+  add('J.A.R.V.I.S: Analyzing image...', 'ai');
+  let lastErr;
+  for (const m of MODELS) {
+    try {
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: q }, { inline_data: { mime_type: mime, data: base64 } }] }]
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        const msg = data.error?.message || ("HTTP " + res.status);
+        lastErr = new Error(msg);
+        if (res.status === 429 || res.status === 503 || /quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(msg)) continue;
+        throw lastErr;
+      }
+      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (reply) {
+        chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
+        speak(reply);
+        setCoreState('', 'SYSTEM READY');
+        return;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + lastErr.message;
+  setCoreState('', 'SYSTEM READY');
+}
+
+// ===== 8. VOICE, WAKE WORD ENGINE (EPISODE 09) & UI CONTROLS =====
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+let wakewordEnabled = false;
+let wakeCommandMode = false;
+const WAKE_WORD = "hey jarvis";
+
+if (SR) {
+  rec = new SR();
+  rec.lang = 'en-US';
+
+  rec.onresult = (e) => {
+    const last = e.results.length - 1;
+    const transcript = e.results[last][0].transcript.trim();
+    const lower = transcript.toLowerCase();
+
+    if (wakewordEnabled) {
+      if (!wakeCommandMode && lower.includes(WAKE_WORD)) {
+        const afterWake = lower.split(WAKE_WORD)[1]?.trim();
+        setCoreState('listening', 'LISTENING FOR COMMAND...');
+        speak("Yes Boss?");
+
+        if (afterWake && afterWake.length > 2) {
+          wakeCommandMode = false;
+          add('YOU: ' + afterWake, 'user');
+          processCommand(afterWake);
+        } else {
+          wakeCommandMode = true;
+        }
+      } else if (wakeCommandMode && e.results[last].isFinal) {
+        wakeCommandMode = false;
+        add('YOU: ' + transcript, 'user');
+        processCommand(transcript);
+      }
+    } else {
+      add('YOU: ' + transcript, 'user');
+      processCommand(transcript);
+    }
+  };
+
+  rec.onend = () => {
+    if (wakewordEnabled) {
+      try {
+        rec.start();
+      } catch (e) {}
+    } else {
+      if (micBtn) micBtn.innerText = '🎤';
+      setCoreState('', 'SYSTEM READY');
+    }
+  };
+}
+
+if (micBtn) {
+  micBtn.onclick = () => {
+    if (!rec) return;
+    if (wakewordEnabled) toggleWakeword();
+    rec.continuous = false;
+    rec.interimResults = false;
+    try {
+      rec.start();
+      micBtn.innerText = 'LISTENING...';
+      setCoreState('listening', 'LISTENING...');
+    } catch (e) {}
+  };
+}
+
+function toggleWakeword() {
+  wakewordEnabled = !wakewordEnabled;
+  wakeCommandMode = false;
+  const btn = document.getElementById('wake-btn');
+  const status = document.getElementById('wake-status');
+
+  if (wakewordEnabled) {
+    if (btn) btn.classList.add('active', 'listening');
+    if (status) {
+      status.innerText = "LISTENING FOR 'HEY JARVIS'...";
+      status.style.color = "#00ff00";
+    }
+    startContinuousListening();
+  } else {
+    if (btn) btn.classList.remove('active', 'listening');
+    if (status) {
+      status.innerText = "WAKE: OFF";
+      status.style.color = "#888";
+    }
+    stopContinuousListening();
+  }
+}
+
+function startContinuousListening() {
+  if (!rec) return;
+  rec.continuous = true;
+  rec.interimResults = true;
+  try {
+    rec.start();
+  } catch (e) {
+    console.log("Recognition already running:", e);
+  }
+}
+
+function stopContinuousListening() {
+  if (!rec) return;
+  rec.continuous = false;
+  rec.interimResults = false;
+  try {
+    rec.stop();
+  } catch (e) {}
+  setCoreState('', 'SYSTEM READY');
+}
+
+const wakeBtn = document.getElementById('wake-btn');
+if (wakeBtn) {
+  wakeBtn.onclick = toggleWakeword;
+}
+
+let voices = [];
+function loadVoices() {
+  voices = speechSynthesis.getVoices();
+}
+loadVoices();
+speechSynthesis.onvoiceschanged = loadVoices;
+
+function speak(t) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t);
+  u.rate = 1.05;
+  u.pitch = 0.85;
+  const v = voices.find(v => v.lang.startsWith('en'));
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+
+document.getElementById('send').onclick = () => {
+  const t = input.value.trim();
+  if (!t) return;
+  add('YOU: ' + t, 'user');
+  input.value = '';
+  processCommand(t);
+};
+
+input.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') document.getElementById('send').click();
+});
+
+if (clearBtn) {
+  clearBtn.onclick = () => {
+    MEMORY = [];
+    saveMemory();
+    chat.innerHTML = '';
+    add('SYSTEM: Memory cleared.', 'ai');
+  };
+}
+
+function add(t, w) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + w;
+  d.innerText = t;
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// ===== 9. PWA SERVICE WORKER REGISTRATION =====
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch((err) => console.log('SW error:', err));
+}
