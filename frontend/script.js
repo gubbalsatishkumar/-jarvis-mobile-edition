@@ -1,10 +1,16 @@
-// ===== 1. API KEY =====
+// ===== 1. API KEY & MULTI-MODEL QUOTA FALLBACK =====
 let API_KEY = localStorage.getItem('jarvis_key');
 if (!API_KEY) {
   API_KEY = prompt('Enter your Gemini API Key:');
   if (API_KEY) localStorage.setItem('jarvis_key', API_KEY);
 }
-const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"];
+// Rotates automatically if one model hits the 20/day free tier limit
+const MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-flash-latest"
+];
 
 // ===== 2. MEMORY =====
 let MEMORY = [];
@@ -12,15 +18,8 @@ try {
   const storedMemory = JSON.parse(localStorage.getItem('jarvis_memory') || '[]');
   if (Array.isArray(storedMemory)) {
     MEMORY = storedMemory.filter(
-      m => m && (m.role === 'user' || m.role === 'model') &&
-      typeof m.text === 'string' &&
-      !(m.role === 'model' && /(?:Your strong password:|password:)/i.test(m.text))
+      m => m && (m.role === 'user' || m.role === 'model') && typeof m.text === 'string'
     );
-    if (MEMORY.length !== storedMemory.length) {
-      localStorage.setItem('jarvis_memory', JSON.stringify(MEMORY));
-    }
-  } else {
-    localStorage.removeItem('jarvis_memory');
   }
 } catch (e) {
   localStorage.removeItem('jarvis_memory');
@@ -39,7 +38,7 @@ const imgInput = document.getElementById('img-input');
 
 MEMORY.forEach(m => add((m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text, m.role === 'user' ? 'user' : 'ai'));
 
-// ===== WORKOUT PLAN DATA (6-DAY PHYSIQUE TRANSFORMATION SPLIT) =====
+// ===== WORKOUT PLAN DATA (ZERO API QUOTA) =====
 const WORKOUT_PLAN = {
   1: "Day 1 (Monday) - Chest + Triceps: Bench Press 3x8-12, Incline DB Press 3x10, Chest Fly 3x12, Tricep Pushdown 3x12, OH Tricep Extension 3x10, Push-ups 2 sets.",
   2: "Day 2 (Tuesday) - Back + Biceps: Lat Pulldown 3x10, Seated Cable Row 3x10, One-arm DB Row 3x10, Barbell Curl 3x12, Hammer Curl 3x12, Dead Hang 2 sets.",
@@ -55,47 +54,51 @@ function getWorkoutResponse(t) {
     return Object.values(WORKOUT_PLAN).join('\n');
   }
   if (t.includes('day 1') || t.includes('monday') || (t.includes('chest') && t.includes('tricep'))) return WORKOUT_PLAN[1];
-  if (t.includes('day 2') || t.includes('tuesday') || t.includes('back') && t.includes('bicep')) return WORKOUT_PLAN[2];
+  if (t.includes('day 2') || t.includes('tuesday') || (t.includes('back') && t.includes('bicep'))) return WORKOUT_PLAN[2];
   if (t.includes('day 3') || t.includes('wednesday') || t.includes('leg')) return WORKOUT_PLAN[3];
   if (t.includes('day 4') || t.includes('thursday') || t.includes('shoulder')) return WORKOUT_PLAN[4];
   if (t.includes('day 5') || t.includes('friday') || (t.includes('chest') && t.includes('back'))) return WORKOUT_PLAN[5];
   if (t.includes('day 6') || t.includes('saturday') || t.includes('arm')) return WORKOUT_PLAN[6];
   if (t.includes('day 7') || t.includes('sunday') || t.includes('rest day')) return WORKOUT_PLAN[7];
 
-  // Default to today's day of the week (JS getDay(): 0 = Sunday -> Day 7, 1 = Monday -> Day 1, etc.)
   const jsDay = new Date().getDay();
   const planDay = jsDay === 0 ? 7 : jsDay;
   return "Today's Workout, Boss — " + WORKOUT_PLAN[planDay];
 }
 
-// ===== 3. TOOLS (THE HANDS) =====
-async function fetchToolJson(url, options = {}, timeoutMs = 10000) {
-  const controller = typeof AbortController === 'function' ? new AbortController() : null;
-  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  try {
-    const response = await fetch(url, { ...options, ...(controller ? { signal: controller.signal } : {}) });
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    return await response.json();
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
+// ===== 3. FREE LOCAL TOOLS (ZERO GEMINI QUOTA USED) =====
+async function fetchToolJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return await response.json();
 }
 
 async function handleTools(text) {
   const t = text.toLowerCase();
 
-  // Workout Plan Tool (Custom Tool from Image)
+  // Change API Key command (Type "change api key" if you ever want to swap keys)
+  if (t.includes('change api key') || t.includes('reset api key')) {
+    const newKey = prompt('Enter new Gemini API Key:');
+    if (newKey) {
+      API_KEY = newKey.trim();
+      localStorage.setItem('jarvis_key', API_KEY);
+      return 'New API Key saved, Boss.';
+    }
+    return 'API Key unchanged.';
+  }
+
+  // Workout Plan
   if (t.includes('workout') || t.includes('gym') || t.includes('exercise') || t.includes('split')) {
     return getWorkoutResponse(t);
   }
 
-  // Open Instagram (Custom Tool)
+  // Open Instagram
   if (t.includes('instagram') || t.includes('insta')) {
     window.open('https://www.instagram.com/', '_blank', 'noopener,noreferrer');
     return 'Opening Instagram, Boss.';
   }
 
-  // Make Phone Calls (Custom Tool)
+  // Make Phone Calls
   if (t.includes('call') || t.includes('dial')) {
     const phoneMatch = t.match(/(\+?\d[\d\s-]{6,15}\d)/);
     if (phoneMatch) {
@@ -108,61 +111,12 @@ async function handleTools(text) {
     }
   }
 
-  // Open YouTube
-  if (/^\s*(?:please\s+)?(?:open\s+youtube|youtube\s+open|youtube)(?:\s+please)?[.!?]*\s*$/i.test(text)) {
-    window.open('https://youtube.com', '_blank', 'noopener,noreferrer');
-    return 'Opening YouTube, Boss.';
-  }
-
-  // Open Google
-  if (/^\s*(?:please\s+)?(?:open\s+google|google\s+open|google)(?:\s+please)?[.!?]*\s*$/i.test(text)) {
-    window.open('https://google.com', '_blank', 'noopener,noreferrer');
-    return 'Opening Google, Boss.';
-  }
-
-  // Open Specific URL
-  const urlCommand = text.match(/^\s*(?:open|visit|go to)\s+(https?:\/\/\S+)\s*$/i);
-  if (urlCommand) {
-    try {
-      const destination = new URL(urlCommand[1]);
-      if (destination.protocol !== 'https:' && destination.protocol !== 'http:') {
-        return 'Only http and https links can be opened.';
-      }
-      window.open(destination.href, '_blank', 'noopener,noreferrer');
-      return 'Opening ' + destination.hostname + ', Boss.';
-    } catch (e) {
-      return 'That link does not look valid.';
-    }
-  }
-
-  // Google Search
-  if (/^\s*(?:google\s+search|search\s+(?:on\s+)?google)(?:\s+for)?\s*$/i.test(text)) {
-    return 'Tell me what to search for on Google.';
-  }
-  const googleSearch = text.match(/^\s*(?:google\s+search|search\s+(?:on\s+)?google)(?:\s+for)?\s+(.+?)\s*$/i);
-  if (googleSearch) {
-    const query = googleSearch[1].trim();
-    if (!query) return 'Tell me what to search for on Google.';
-    window.open('https://www.google.com/search?q=' + encodeURIComponent(query), '_blank', 'noopener,noreferrer');
-    return 'Searching Google for ' + query + ', Boss.';
-  }
-
-  // YouTube Search / Play
-  const playMatch = text.match(/^\s*play\s+(.+?)\s*$/i);
-  const youtubeMatch = text.match(/^\s*youtube(?:\s+search)?(?:\s+for)?\s+(.+?)\s*$/i);
-  const searchYoutubeMatch = text.match(/^\s*search\s+(?:on\s+)?youtube(?:\s+for)?\s+(.+?)\s*$/i);
-  const videoQuery = (playMatch || youtubeMatch || searchYoutubeMatch)?.[1]?.trim();
-  if (videoQuery) {
-    window.open('https://www.youtube.com/results?search_query=' + encodeURIComponent(videoQuery), '_blank', 'noopener,noreferrer');
-    return 'Searching YouTube for ' + videoQuery + ', Boss.';
-  }
-
-  // Time Tool
+  // Time
   if (/\btime\b/.test(t) || t.includes('సమయం') || t.includes('టైం')) {
     return 'Current time is ' + new Date().toLocaleTimeString() + ', Boss.';
   }
 
-  // Weather Tool
+  // Weather
   if (t.includes('weather') || t.includes('వాతావరణం')) {
     return await new Promise(res => {
       navigator.geolocation.getCurrentPosition(async p => {
@@ -176,7 +130,7 @@ async function handleTools(text) {
     });
   }
 
-  // Tech News Tool
+  // News
   if (t.includes('news')) {
     try {
       const d = await fetchToolJson('https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=3');
@@ -187,7 +141,7 @@ async function handleTools(text) {
     }
   }
 
-  // Crypto / Bitcoin Tool
+  // Crypto / Bitcoin
   if (t.includes('crypto') || t.includes('bitcoin') || t.includes('btc')) {
     try {
       const d = await fetchToolJson('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,inr');
@@ -197,7 +151,7 @@ async function handleTools(text) {
     }
   }
 
-  // Timer Tool
+  // Timer
   const m = t.match(/(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/i);
   if ((t.includes('timer') || t.includes('టైమర్')) && m) {
     const amount = parseInt(m[1]);
@@ -207,7 +161,7 @@ async function handleTools(text) {
     return `Timer set for ${amount} ${unit}, Boss.`;
   }
 
-  // Translate Tool
+  // Translate
   if (t.includes('translate')) {
     const q = text.replace(/translate\s+(this\s+)?/i, '').replace(/\s+(to|into)\s+telugu/i, '').trim() || 'hello';
     try {
@@ -218,140 +172,24 @@ async function handleTools(text) {
     }
   }
 
-  // Wikipedia Search Tool
-  const searchMatch = text.match(/^\s*(?:search|look up)\s+(?:for\s+)?(.+?)\s*$/i);
-  if (searchMatch) {
-    const query = searchMatch[1].trim();
-    if (!query) return 'Tell me what to search for.';
-    try {
-      const url = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=1&srsearch=' + encodeURIComponent(query) + '&format=json&origin=*';
-      const data = await fetchToolJson(url);
-      const result = data?.query?.search?.[0];
-      if (!result) return 'I could not find that, Boss.';
-      const snippet = String(result.snippet || '')
-        .replace(/<[^>]*>/g, '')
-        .replace(/&quot;/g, '"')
-        .replace(/&#039;/g, "'")
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>');
-      return 'Wikipedia summary: ' + result.title + (snippet ? '. ' + snippet : '');
-    } catch (e) {
-      return 'Search error, Boss.';
+  // YouTube / Open Apps
+  if (t.includes('youtube') || t.startsWith('play ')) {
+    const q = text.replace(/^(play|open|search)\s*(on\s*)?(youtube\s*)?/i, '').trim();
+    if (q) {
+      window.open('https://www.youtube.com/results?search_query=' + encodeURIComponent(q), '_blank', 'noopener,noreferrer');
+      return 'Searching YouTube for ' + q + ', Boss.';
     }
+    window.open('https://youtube.com', '_blank', 'noopener,noreferrer');
+    return 'Opening YouTube, Boss.';
   }
 
   return null;
 }
 
-// ===== 3.5. AGENT MODE ENGINE (EPISODE 07) =====
-const AGENT_TOOLS = Object.freeze({
-  time: async () => handleTools('current time'),
-  weather: async () => handleTools('weather'),
-  news: async () => handleTools('news'),
-  crypto: async () => handleTools('bitcoin'),
-  workout: async () => handleTools('workout')
-});
-
-const AGENT_TOOL_NAMES = Object.freeze({
-  time: 'time',
-  weather: 'weather',
-  news: 'news',
-  crypto: 'crypto',
-  workout: 'workout'
-});
-
-function isAgentModeRequest(text = '') {
-  const value = String(text || '');
-  if (/\b(?:agent(?:\s+mode)?|run\s+(?:the\s+)?agent|use\s+(?:the\s+)?agent)\b/i.test(value)) return true;
-  if (/\b(?:briefing|research|analy[sz]e|analysis)\b/i.test(value)) return true;
-  return /\bplan\b/i.test(value) && /\b(?:time|weather|news|crypto|bitcoin|btc|workout|gym)\b/i.test(value);
-}
-
-function parseAgentToolPlan(responseText) {
-  const text = String(responseText || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const start = text.indexOf('[');
-  const end = text.lastIndexOf(']');
-  if (start < 0 || end < start) throw new Error('Agent plan format incorrect.');
-  const parsed = JSON.parse(text.slice(start, end + 1));
-  const allowed = new Set(Object.keys(AGENT_TOOLS));
-  return [...new Set(
-    parsed
-      .filter(item => typeof item === 'string')
-      .map(item => item.trim().toLowerCase())
-      .filter(item => allowed.has(item))
-  )];
-}
-
-function fallbackAgentToolPlan(goal) {
-  const g = String(goal || '').toLowerCase();
-  const plan = [];
-  if (g.includes('briefing') || g.includes('morning')) return ['time', 'weather', 'workout', 'news'];
-  if (g.includes('time')) plan.push('time');
-  if (g.includes('weather') || g.includes('trip') || g.includes('plan')) plan.push('weather');
-  if (g.includes('workout') || g.includes('gym')) plan.push('workout');
-  if (g.includes('news') || g.includes('research')) plan.push('news');
-  if (g.includes('crypto') || g.includes('bitcoin')) plan.push('crypto');
-  return plan.length ? plan : ['time', 'weather', 'news'];
-}
-
-async function runAgent(goal) {
-  add('J.A.R.V.I.S: AGENT MODE ACTIVATED.', 'ai');
-  add('J.A.R.V.I.S: Goal analyze chesthunna...', 'ai');
-
-  const planPrompt = 'Select the needed tools from ["time", "weather", "news", "crypto", "workout"] and return ONLY a JSON array. Goal: ' + JSON.stringify(String(goal));
-  let toolsToRun;
-  try {
-    toolsToRun = parseAgentToolPlan(await callGeminiRaw(planPrompt));
-    if (!toolsToRun.length) toolsToRun = fallbackAgentToolPlan(goal);
-  } catch (error) {
-    toolsToRun = fallbackAgentToolPlan(goal);
-  }
-
-  const results = {};
-  for (let i = 0; i < toolsToRun.length; i++) {
-    const tool = toolsToRun[i];
-    add('J.A.R.V.I.S: [' + (i + 1) + '/' + toolsToRun.length + '] ' + AGENT_TOOL_NAMES[tool] + ' tool run chesthunna...', 'ai');
-    try {
-      results[tool] = await AGENT_TOOLS[tool]();
-    } catch (e) {
-      results[tool] = 'Tool error';
-    }
-  }
-
-  add('J.A.R.V.I.S: Results combine chesthunna...', 'ai');
-  const summaryPrompt = 'Goal: ' + JSON.stringify(String(goal)) + '. Tool results: ' + JSON.stringify(results) + '. Give a concise, helpful Telugu/English summary for Boss.';
-  return await callGemini(summaryPrompt);
-}
-
-// ===== 4. GEMINI BRAIN =====
-async function callGeminiRaw(promptText) {
-  if (!API_KEY) throw new Error('Gemini API key is missing.');
-  let lastErr;
-  for (const m of MODELS) {
-    try {
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + API_KEY, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: promptText }] }] })
-      });
-      const data = await res.json();
-      if (data.error) {
-        lastErr = new Error(data.error.message);
-        if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
-        throw lastErr;
-      }
-      return data.candidates[0].content.parts[0].text;
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr;
-}
-
+// ===== 4. GEMINI BRAIN WITH AUTO-FALLBACK =====
 async function callGemini(p) {
   if (!API_KEY) throw new Error('Gemini API key is missing.');
-  const contents = MEMORY.slice(-12).map(m => ({ role: m.role, parts: [{ text: m.text }] }));
+  const contents = MEMORY.slice(-10).map(m => ({ role: m.role, parts: [{ text: m.text }] }));
   contents.push({ role: 'user', parts: [{ text: p }] });
 
   let lastErr;
@@ -365,7 +203,10 @@ async function callGemini(p) {
       const data = await res.json();
       if (data.error) {
         lastErr = new Error(data.error.message);
-        if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
+        // Automatically switch to next model if quota/rate limit or high demand occurs
+        if (/quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(data.error.message)) {
+          continue;
+        }
         throw lastErr;
       }
       return data.candidates[0].content.parts[0].text;
@@ -376,30 +217,20 @@ async function callGemini(p) {
   throw lastErr;
 }
 
-// ===== 5. MASTER ROUTER (AGENT -> TOOLS -> BRAIN) =====
+// ===== 5. COMMAND ROUTER =====
 async function processCommand(p) {
+  add('J.A.R.V.I.S: Thinking...', 'ai');
+
+  // 1. Run Free Local Tools First (Uses 0 Gemini Quota)
+  const toolReply = await handleTools(p);
+  if (toolReply) {
+    chat.lastChild.innerText = 'J.A.R.V.I.S: ' + toolReply;
+    speak(toolReply);
+    return;
+  }
+
+  // 2. Ask Gemini Brain with Multi-Model Fallback
   try {
-    // 1. Check if Agent Mode should trigger
-    if (isAgentModeRequest(p)) {
-      const agentReply = await runAgent(p);
-      MEMORY.push({ role: 'user', text: p });
-      MEMORY.push({ role: 'model', text: agentReply });
-      saveMemory();
-      add('J.A.R.V.I.S: ' + agentReply, 'ai');
-      speak(agentReply);
-      return;
-    }
-
-    // 2. Check single Tools
-    add('J.A.R.V.I.S: Thinking...', 'ai');
-    const toolReply = await handleTools(p);
-    if (toolReply) {
-      chat.lastChild.innerText = 'J.A.R.V.I.S: ' + toolReply;
-      speak(toolReply);
-      return;
-    }
-
-    // 3. Default to Gemini Brain with Memory
     const reply = await callGemini(p);
     MEMORY.push({ role: 'user', text: p });
     MEMORY.push({ role: 'model', text: reply });
@@ -407,11 +238,11 @@ async function processCommand(p) {
     chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
     speak(reply);
   } catch (e) {
-    add('J.A.R.V.I.S: ERROR ' + e.message, 'ai');
+    chat.lastChild.innerText = 'J.A.R.V.I.S: ERROR ' + e.message;
   }
 }
 
-// ===== 6. VISION ENGINE (THE EYES) =====
+// ===== 6. VISION ENGINE =====
 if (camBtn && imgInput) {
   camBtn.onclick = () => imgInput.click();
   imgInput.onchange = () => {
@@ -444,7 +275,7 @@ async function askVision(base64, mime, q) {
       const data = await res.json();
       if (data.error) {
         lastErr = new Error(data.error.message);
-        if (/high demand|temporar|quota|rate|unavailable|deprecated/i.test(data.error.message)) continue;
+        if (/quota|rate|limit|high demand|temporar|unavailable|deprecated|not found/i.test(data.error.message)) continue;
         throw lastErr;
       }
       const reply = data.candidates[0].content.parts[0].text;
