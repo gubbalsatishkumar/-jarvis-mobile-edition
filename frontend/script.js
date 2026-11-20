@@ -46,9 +46,61 @@ function setCoreState(state, label) {
 
 MEMORY.forEach(m => add((m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text, m.role === 'user' ? 'user' : 'ai'));
 
-// ===== ENCRYPTED SAFE VAULT (AES-GCM + MASTER PIN) =====
-const VAULT_KEY = 'jarvis_safe_vault';
+// ===== ENCRYPTED SAFE ALBUM & DOCUMENT VAULT (INDEXEDDB + AES-GCM) =====
+const VAULT_DB_NAME = 'JarvisSafeAlbumDB';
+const VAULT_STORE_NAME = 'albums';
 const VAULT_PIN_HASH_KEY = 'jarvis_vault_pin_hash';
+
+const safeDocInput = document.createElement('input');
+safeDocInput.type = 'file';
+safeDocInput.accept = 'image/*,.pdf,.doc,.docx,.txt';
+safeDocInput.multiple = true;
+safeDocInput.style.display = 'none';
+document.body.appendChild(safeDocInput);
+
+function openVaultDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(VAULT_DB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(VAULT_STORE_NAME)) {
+        db.createObjectStore(VAULT_STORE_NAME, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getAllVaultItems() {
+  const db = await openVaultDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VAULT_STORE_NAME, 'readonly');
+    const req = tx.objectStore(VAULT_STORE_NAME).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function addVaultItem(record) {
+  const db = await openVaultDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+    tx.objectStore(VAULT_STORE_NAME).add(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function clearAllVaultItems() {
+  const db = await openVaultDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+    tx.objectStore(VAULT_STORE_NAME).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 async function sha256Hex(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -75,7 +127,7 @@ async function deriveVaultKey(pin, salt) {
 async function verifyOrSetupPin() {
   let savedHash = localStorage.getItem(VAULT_PIN_HASH_KEY);
   if (!savedHash) {
-    const newPin = prompt('Create a 4-digit Master PIN to lock your Safe Vault:');
+    const newPin = prompt('Create a 4-digit Master PIN to lock your Safe Album:');
     if (!newPin || newPin.trim().length < 4) return null;
     savedHash = await sha256Hex(newPin.trim());
     localStorage.setItem(VAULT_PIN_HASH_KEY, savedHash);
@@ -88,60 +140,157 @@ async function verifyOrSetupPin() {
   return enteredPin.trim();
 }
 
-async function storeInSafeVault(secretNote) {
-  const pin = await verifyOrSetupPin();
-  if (!pin) return 'Safe Vault operation cancelled, Boss.';
-  if (pin === 'INVALID') return 'Access denied. Incorrect Master PIN.';
-
+async function encryptBytes(pin, plainUint8Array) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveVaultKey(pin, salt);
-  const timestamp = new Date().toLocaleString('en-IN');
-  const payload = JSON.stringify({ note: secretNote, savedAt: timestamp });
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(payload));
-
-  const vault = JSON.parse(localStorage.getItem(VAULT_KEY) || '[]');
-  vault.push({
-    salt: Array.from(salt),
-    iv: Array.from(iv),
-    data: Array.from(new Uint8Array(encrypted))
-  });
-  localStorage.setItem(VAULT_KEY, JSON.stringify(vault));
-  return `Identity verified, Boss. Encrypted and stored safely (${vault.length} total item${vault.length > 1 ? 's' : ''} in vault).`;
+  const cipherBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plainUint8Array);
+  return { salt, iv, cipherBuf };
 }
 
-async function readSafeVault() {
-  const vault = JSON.parse(localStorage.getItem(VAULT_KEY) || '[]');
-  if (!vault.length) return 'Your Safe Vault is currently empty, Boss.';
+async function decryptBytes(pin, salt, iv, cipherBuf) {
+  const key = await deriveVaultKey(pin, new Uint8Array(salt));
+  return await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(iv) }, key, cipherBuf);
+}
 
+function pickDocumentsFromDevice() {
+  return new Promise((resolve) => {
+    safeDocInput.value = '';
+    safeDocInput.onchange = () => {
+      resolve(Array.from(safeDocInput.files || []));
+    };
+    safeDocInput.click();
+  });
+}
+
+async function storeDocumentsInSafeAlbum(albumName, label) {
   const pin = await verifyOrSetupPin();
-  if (!pin) return 'Safe Vault locked.';
+  if (!pin) return 'Safe Album operation cancelled, Boss.';
   if (pin === 'INVALID') return 'Access denied. Incorrect Master PIN.';
 
-  const decryptedList = [];
-  for (let i = 0; i < vault.length; i++) {
-    try {
-      const item = vault[i];
-      const key = await deriveVaultKey(pin, new Uint8Array(item.salt));
-      const plainBuf = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: new Uint8Array(item.iv) },
-        key,
-        new Uint8Array(item.data)
-      );
-      const parsed = JSON.parse(new TextDecoder().decode(plainBuf));
-      decryptedList.push(`${i + 1}. [${parsed.savedAt}] ${parsed.note}`);
-    } catch (e) {
-      decryptedList.push(`${i + 1}. [Corrupted entry]`);
-    }
+  add(`J.A.R.V.I.S: Identity verified. Select your document(s) or photos to lock in "${albumName}"...`, 'ai');
+  const files = await pickDocumentsFromDevice();
+  if (!files.length) return 'No documents selected, Boss.';
+
+  for (const file of files) {
+    const rawBuf = await file.arrayBuffer();
+    const { salt, iv, cipherBuf } = await encryptBytes(pin, new Uint8Array(rawBuf));
+    await addVaultItem({
+      kind: 'file',
+      album: albumName,
+      label: label || file.name,
+      fileName: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      savedAt: new Date().toLocaleString('en-IN'),
+      salt,
+      iv,
+      cipherBuf
+    });
   }
-  return `Identity verified: Welcome, Boss.\nSafe Vault Contents:\n` + decryptedList.join('\n');
+
+  const allItems = await getAllVaultItems();
+  return `Encrypted and locked ${files.length} document${files.length > 1 ? 's' : ''} inside Safe Album "${albumName}", Boss (${allItems.length} total items stored).`;
 }
 
-async function clearSafeVault() {
+async function storeNoteInSafeAlbum(albumName, secretNote) {
   const pin = await verifyOrSetupPin();
-  if (!pin || pin === 'INVALID') return 'Access denied. Safe Vault was not cleared.';
-  localStorage.removeItem(VAULT_KEY);
-  return 'Safe Vault wiped clean, Boss.';
+  if (!pin) return 'Safe Album operation cancelled, Boss.';
+  if (pin === 'INVALID') return 'Access denied. Incorrect Master PIN.';
+
+  const encoded = new TextEncoder().encode(secretNote);
+  const { salt, iv, cipherBuf } = await encryptBytes(pin, encoded);
+  await addVaultItem({
+    kind: 'note',
+    album: albumName,
+    label: 'Secret Note',
+    savedAt: new Date().toLocaleString('en-IN'),
+    salt,
+    iv,
+    cipherBuf
+  });
+
+  const allItems = await getAllVaultItems();
+  return `Identity verified, Boss. Encrypted and stored in Safe Album "${albumName}" (${allItems.length} total items).`;
+}
+
+async function openSafeAlbum(filterAlbum) {
+  const items = await getAllVaultItems();
+  if (!items.length) return 'Your Safe Album is currently empty, Boss.';
+
+  const pin = await verifyOrSetupPin();
+  if (!pin) return 'Safe Album locked.';
+  if (pin === 'INVALID') return 'Access denied. Incorrect Master PIN.';
+
+  const target = (filterAlbum || '').toLowerCase().trim();
+  const matched = target && target !== 'album' && target !== 'all'
+    ? items.filter(it => (it.album || 'Important Documents').toLowerCase().includes(target))
+    : items;
+
+  if (!matched.length) {
+    const available = [...new Set(items.map(i => i.album || 'Important Documents'))].join(', ');
+    return `No items found in album "${filterAlbum}". Available albums: ${available}.`;
+  }
+
+  const box = document.createElement('div');
+  box.className = 'msg ai';
+  box.innerHTML = `<b>J.A.R.V.I.S: Identity Verified — Safe Album (${matched.length} item${matched.length > 1 ? 's' : ''})</b><br>`;
+
+  for (let i = 0; i < matched.length; i++) {
+    const it = matched[i];
+    try {
+      const plainBuf = await decryptBytes(pin, it.salt, it.iv, it.cipherBuf);
+      const row = document.createElement('div');
+      row.style.marginTop = '8px';
+      row.style.padding = '6px';
+      row.style.border = '1px solid rgba(0,255,255,0.35)';
+
+      if (it.kind === 'file') {
+        const blob = new Blob([plainBuf], { type: it.mimeType });
+        const url = URL.createObjectURL(blob);
+        row.innerHTML = `<div>📁 <b>[${it.album}]</b> ${it.fileName} <small>(${it.savedAt})</small></div>`;
+
+        if ((it.mimeType || '').startsWith('image/')) {
+          const img = document.createElement('img');
+          img.src = url;
+          img.style.maxWidth = '100%';
+          img.style.maxHeight = '180px';
+          img.style.marginTop = '6px';
+          img.style.borderRadius = '6px';
+          img.style.display = 'block';
+          row.appendChild(img);
+        }
+
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = it.fileName;
+        link.innerText = '⬇ Open / Download Document';
+        link.style.color = '#0f0';
+        link.style.display = 'inline-block';
+        link.style.marginTop = '4px';
+        row.appendChild(link);
+      } else {
+        const textNote = new TextDecoder().decode(plainBuf);
+        row.innerText = `🔒 [${it.album}] (${it.savedAt}): ${textNote}`;
+      }
+      box.appendChild(row);
+    } catch (e) {
+      const errDiv = document.createElement('div');
+      errDiv.innerText = `${i + 1}. [Could not decrypt item]`;
+      box.appendChild(errDiv);
+    }
+  }
+
+  chat.appendChild(box);
+  chat.scrollTop = chat.scrollHeight;
+  speak(`Safe Album unlocked, Boss. Showing ${matched.length} encrypted items.`);
+  return '__HANDLED_HTML__';
+}
+
+async function clearSafeAlbum() {
+  const pin = await verifyOrSetupPin();
+  if (!pin || pin === 'INVALID') return 'Access denied. Safe Album was not cleared.';
+  await clearAllVaultItems();
+  return 'Safe Album wiped clean, Boss.';
 }
 
 // ===== WORKOUT SPLIT (6-DAY PHYSIQUE TRANSFORMATION) =====
@@ -172,7 +321,7 @@ function getWorkoutResponse(t) {
   return "Today's Workout, Boss — " + WORKOUT_PLAN[planDay];
 }
 
-// ===== 3. ALL TOOLS (EPISODE 06 + SAFE VAULT + ANDROID INTENTS - ZERO QUOTA) =====
+// ===== 3. ALL TOOLS (EPISODE 06 + SAFE ALBUM + EMAIL + ANDROID INTENTS - ZERO QUOTA) =====
 async function fetchToolJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -189,6 +338,36 @@ const ANDROID_APPS = {
   calculator: 'intent://#Intent;package=com.google.android.calculator;end'
 };
 
+function handleEmailCommand(text) {
+  const t = text.toLowerCase().trim();
+
+  // Open Gmail / Inbox directly
+  if (t === 'email' || t === 'gmail' || t.includes('open email') || t.includes('open gmail') || t.includes('check email') || t.includes('check gmail')) {
+    window.location.href = ANDROID_APPS.gmail;
+    return 'Opening Gmail, Boss.';
+  }
+
+  // Send / Compose / Write Email
+  if (t.includes('send email') || t.includes('send mail') || t.includes('compose email') || t.includes('write email') || t.includes('email to')) {
+    const emailMatch = text.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/);
+    let to = emailMatch ? emailMatch[1] : prompt('Enter recipient email address:');
+    if (!to) return 'Email cancelled, Boss.';
+
+    const subjMatch = text.match(/\bsubject\s+(.+?)(?=\s+\b(?:body|message|saying|text)\b|$)/i);
+    let subject = subjMatch ? subjMatch[1].trim() : prompt('Enter email subject:', 'Message from J.A.R.V.I.S');
+    if (subject === null) return 'Email cancelled, Boss.';
+
+    const bodyMatch = text.match(/\b(?:body|message|saying|text)\s+(.+)$/i);
+    let body = bodyMatch ? bodyMatch[1].trim() : prompt('Enter email message:');
+    if (body === null) return 'Email cancelled, Boss.';
+
+    window.location.href = `mailto:${encodeURIComponent(to.trim())}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    return `Opening email draft to ${to.trim()}, Boss.`;
+  }
+
+  return null;
+}
+
 async function handleTools(text) {
   const t = text.toLowerCase().trim();
 
@@ -199,20 +378,36 @@ async function handleTools(text) {
     return 'Biometric PIN confirmed. Welcome back, Boss — Gubbala Satish Kumar. All J.A.R.V.I.S systems are at your command.';
   }
 
-  // Safe Vault: Store
+  // Safe Album: Store Documents or Notes ("please store safe my important documents in Album")
   const storeMatch = text.match(/(?:please\s+)?(?:store\s+safe|save\s+safe|keep\s+safe)\s*:?\s*(.+)/i);
   if (storeMatch && storeMatch[1]) {
-    return await storeInSafeVault(storeMatch[1].trim());
+    const rawContent = storeMatch[1].trim();
+    const inAlbumMatch = rawContent.match(/^(.*?)\s+in\s+(?:the\s+)?(.+?)(?:\s+album)?$/i);
+    const itemDesc = (inAlbumMatch ? inAlbumMatch[1] : rawContent).trim();
+    const albumName = (inAlbumMatch && inAlbumMatch[2] ? inAlbumMatch[2] : 'Important Documents').trim();
+
+    if (/\b(?:document|documents|doc|docs|photo|photos|image|images|file|files|pdf|card|certificate|id|aadhaar|pan)\b/i.test(itemDesc) || /\balbum\b/i.test(rawContent)) {
+      return await storeDocumentsInSafeAlbum(albumName, itemDesc);
+    }
+    return await storeNoteInSafeAlbum(albumName, itemDesc);
   }
 
-  // Safe Vault: Read / Open
-  if (t.includes('open safe') || t.includes('read safe') || t.includes('show safe') || t.includes('my safe') || t.includes('safe vault')) {
-    return await readSafeVault();
+  // Safe Album: Open / Read
+  const openAlbumMatch = text.match(/(?:open|read|show|view)\s+(?:my\s+)?(?:safe(?:\s+vault|\s+album)?|album)(?:\s+(.+))?$/i);
+  if (openAlbumMatch || t.includes('safe vault') || t.includes('safe album') || t.includes('my documents')) {
+    const requestedAlbum = openAlbumMatch && openAlbumMatch[1] ? openAlbumMatch[1].replace(/\balbum\b/i, '').trim() : '';
+    return await openSafeAlbum(requestedAlbum);
   }
 
-  // Safe Vault: Clear
-  if (t.includes('clear safe') || t.includes('delete safe')) {
-    return await clearSafeVault();
+  // Safe Album: Clear
+  if (t.includes('clear safe') || t.includes('delete safe') || t.includes('clear album')) {
+    return await clearSafeAlbum();
+  }
+
+  // Email & Gmail
+  if (t.includes('email') || t.includes('gmail') || t.includes('send mail')) {
+    const emailRes = handleEmailCommand(text);
+    if (emailRes) return emailRes;
   }
 
   // Change / Reset API Key
@@ -491,10 +686,15 @@ async function processCommand(p) {
 
     // 2. Local Tools (Zero Quota)
     add('J.A.R.V.I.S: Thinking...', 'ai');
+    const thinkingNode = chat.lastChild;
     const toolReply = await handleTools(p);
     if (toolReply) {
-      chat.lastChild.innerText = 'J.A.R.V.I.S: ' + toolReply;
-      speak(toolReply);
+      if (toolReply === '__HANDLED_HTML__') {
+        if (thinkingNode && thinkingNode.parentNode) thinkingNode.remove();
+      } else {
+        thinkingNode.innerText = 'J.A.R.V.I.S: ' + toolReply;
+        speak(toolReply);
+      }
       setCoreState('', 'SYSTEM READY');
       return;
     }
@@ -504,7 +704,7 @@ async function processCommand(p) {
     MEMORY.push({ role: 'user', text: p });
     MEMORY.push({ role: 'model', text: reply });
     saveMemory();
-    chat.lastChild.innerText = 'J.A.R.V.I.S: ' + reply;
+    thinkingNode.innerText = 'J.A.R.V.I.S: ' + reply;
     speak(reply);
   } catch (e) {
     if (chat.lastChild && chat.lastChild.innerText.includes('Thinking...')) {
