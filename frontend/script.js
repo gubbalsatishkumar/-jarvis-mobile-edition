@@ -46,6 +46,104 @@ function setCoreState(state, label) {
 
 MEMORY.forEach(m => add((m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text, m.role === 'user' ? 'user' : 'ai'));
 
+// ===== ENCRYPTED SAFE VAULT (AES-GCM + MASTER PIN) =====
+const VAULT_KEY = 'jarvis_safe_vault';
+const VAULT_PIN_HASH_KEY = 'jarvis_vault_pin_hash';
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function deriveVaultKey(pin, salt) {
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(pin),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function verifyOrSetupPin() {
+  let savedHash = localStorage.getItem(VAULT_PIN_HASH_KEY);
+  if (!savedHash) {
+    const newPin = prompt('Create a 4-digit Master PIN to lock your Safe Vault:');
+    if (!newPin || newPin.trim().length < 4) return null;
+    savedHash = await sha256Hex(newPin.trim());
+    localStorage.setItem(VAULT_PIN_HASH_KEY, savedHash);
+    return newPin.trim();
+  }
+  const enteredPin = prompt('Enter your Master PIN to verify identity, Boss:');
+  if (!enteredPin) return null;
+  const enteredHash = await sha256Hex(enteredPin.trim());
+  if (enteredHash !== savedHash) return 'INVALID';
+  return enteredPin.trim();
+}
+
+async function storeInSafeVault(secretNote) {
+  const pin = await verifyOrSetupPin();
+  if (!pin) return 'Safe Vault operation cancelled, Boss.';
+  if (pin === 'INVALID') return 'Access denied. Incorrect Master PIN.';
+
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveVaultKey(pin, salt);
+  const timestamp = new Date().toLocaleString('en-IN');
+  const payload = JSON.stringify({ note: secretNote, savedAt: timestamp });
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(payload));
+
+  const vault = JSON.parse(localStorage.getItem(VAULT_KEY) || '[]');
+  vault.push({
+    salt: Array.from(salt),
+    iv: Array.from(iv),
+    data: Array.from(new Uint8Array(encrypted))
+  });
+  localStorage.setItem(VAULT_KEY, JSON.stringify(vault));
+  return `Identity verified, Boss. Encrypted and stored safely (${vault.length} total item${vault.length > 1 ? 's' : ''} in vault).`;
+}
+
+async function readSafeVault() {
+  const vault = JSON.parse(localStorage.getItem(VAULT_KEY) || '[]');
+  if (!vault.length) return 'Your Safe Vault is currently empty, Boss.';
+
+  const pin = await verifyOrSetupPin();
+  if (!pin) return 'Safe Vault locked.';
+  if (pin === 'INVALID') return 'Access denied. Incorrect Master PIN.';
+
+  const decryptedList = [];
+  for (let i = 0; i < vault.length; i++) {
+    try {
+      const item = vault[i];
+      const key = await deriveVaultKey(pin, new Uint8Array(item.salt));
+      const plainBuf = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(item.iv) },
+        key,
+        new Uint8Array(item.data)
+      );
+      const parsed = JSON.parse(new TextDecoder().decode(plainBuf));
+      decryptedList.push(`${i + 1}. [${parsed.savedAt}] ${parsed.note}`);
+    } catch (e) {
+      decryptedList.push(`${i + 1}. [Corrupted entry]`);
+    }
+  }
+  return `Identity verified: Welcome, Boss.\nSafe Vault Contents:\n` + decryptedList.join('\n');
+}
+
+async function clearSafeVault() {
+  const pin = await verifyOrSetupPin();
+  if (!pin || pin === 'INVALID') return 'Access denied. Safe Vault was not cleared.';
+  localStorage.removeItem(VAULT_KEY);
+  return 'Safe Vault wiped clean, Boss.';
+}
+
 // ===== WORKOUT SPLIT (6-DAY PHYSIQUE TRANSFORMATION) =====
 const WORKOUT_PLAN = {
   1: "Day 1 (Monday) - Chest + Triceps: Bench Press 3x8-12, Incline DB Press 3x10, Chest Fly 3x12, Tricep Pushdown 3x12, OH Tricep Extension 3x10, Push-ups 2 sets.",
@@ -74,15 +172,48 @@ function getWorkoutResponse(t) {
   return "Today's Workout, Boss — " + WORKOUT_PLAN[planDay];
 }
 
-// ===== 3. ALL TOOLS (EPISODE 06 + CUSTOM TOOLS - ZERO QUOTA) =====
+// ===== 3. ALL TOOLS (EPISODE 06 + SAFE VAULT + ANDROID INTENTS - ZERO QUOTA) =====
 async function fetchToolJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return await res.json();
 }
 
+const ANDROID_APPS = {
+  whatsapp: 'intent://send#Intent;scheme=whatsapp;package=com.whatsapp;end',
+  telegram: 'intent://resolve#Intent;scheme=tg;package=org.telegram.messenger;end',
+  maps: 'intent://maps.google.com/maps#Intent;scheme=https;package=com.google.android.apps.maps;end',
+  gmail: 'intent://#Intent;package=com.google.android.gm;end',
+  camera: 'intent://#Intent;action=android.media.action.IMAGE_CAPTURE;end',
+  settings: 'intent://#Intent;action=android.settings.SETTINGS;end',
+  calculator: 'intent://#Intent;package=com.google.android.calculator;end'
+};
+
 async function handleTools(text) {
   const t = text.toLowerCase().trim();
+
+  // Owner Identity Verification
+  if (t.includes('recognize me') || t.includes('recognise me') || t.includes('who am i') || t.includes('verify me')) {
+    const pin = await verifyOrSetupPin();
+    if (!pin || pin === 'INVALID') return 'Voice/PIN mismatch. Identity could not be verified.';
+    return 'Biometric PIN confirmed. Welcome back, Boss — Gubbala Satish Kumar. All J.A.R.V.I.S systems are at your command.';
+  }
+
+  // Safe Vault: Store
+  const storeMatch = text.match(/(?:please\s+)?(?:store\s+safe|save\s+safe|keep\s+safe)\s*:?\s*(.+)/i);
+  if (storeMatch && storeMatch[1]) {
+    return await storeInSafeVault(storeMatch[1].trim());
+  }
+
+  // Safe Vault: Read / Open
+  if (t.includes('open safe') || t.includes('read safe') || t.includes('show safe') || t.includes('my safe') || t.includes('safe vault')) {
+    return await readSafeVault();
+  }
+
+  // Safe Vault: Clear
+  if (t.includes('clear safe') || t.includes('delete safe')) {
+    return await clearSafeVault();
+  }
 
   // Change / Reset API Key
   if (t.includes('change api key') || t.includes('reset api key')) {
@@ -104,6 +235,14 @@ async function handleTools(text) {
   if (t.includes('instagram') || t.includes('insta')) {
     window.open('https://www.instagram.com/', '_blank', 'noopener,noreferrer');
     return 'Opening Instagram, Boss.';
+  }
+
+  // Open Native Android Apps via Intent
+  for (const [appName, intentUrl] of Object.entries(ANDROID_APPS)) {
+    if (t.includes('open ' + appName) || t === appName) {
+      window.location.href = intentUrl;
+      return `Launching ${appName.charAt(0).toUpperCase() + appName.slice(1)}, Boss.`;
+    }
   }
 
   // Make Phone Calls
